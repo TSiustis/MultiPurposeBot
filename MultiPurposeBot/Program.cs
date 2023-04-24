@@ -1,13 +1,18 @@
 ﻿using Discord;
+using Discord.Interactions;
 using Discord.WebSocket;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using MultiPurposeBot.Services;
 
-namespace csharpi
+namespace MultiPurposeBot
 {
     class Program
     {
-        private readonly DiscordSocketClient _client;
+        private DiscordSocketClient _client;
         private readonly IConfiguration _config;
+        private InteractionService _commands;
+        private ulong _testGuilldId;
 
         public static Task Main(string[] args) => new Program().MainAsync();
 
@@ -18,26 +23,34 @@ namespace csharpi
 
         public Program()
         {
-            _client = new DiscordSocketClient();
-
-            _client.Log += Log;
-
-            _client.Ready += Ready;
-
-            _client.MessageReceived += MessageReceivedAsync;
-
             var _builder = new ConfigurationBuilder()
                 .SetBasePath(AppContext.BaseDirectory)
                 .AddJsonFile(path: "config.json");
+
             _config = _builder.Build();
+            _testGuilldId = ulong.Parse(_config["TestGuildId"]);
         }
 
         public async Task MainAsync()
         {
-            await _client.LoginAsync(TokenType.Bot, _config["Token"]);
-            await _client.StartAsync();
+            using (var services = ConfigureServices())
+            {
+                var client = services.GetRequiredService<DiscordSocketClient>();
+                var commands = services.GetRequiredService<InteractionService>();
+                _client = client;
+                _commands = commands;
 
-            await Task.Delay(-1);
+                _client.Log += Log;
+                _commands.Log += Log;
+                _client.Ready += ReadyAsync;
+
+                await _client.LoginAsync(TokenType.Bot, _config["Token"]);
+                await client.StartAsync();
+
+                await services.GetRequiredService<CommandHandler>().InitializeAsync();
+                await Task.Delay(Timeout.Infinite);
+            }
+            
         }
 
         private Task Log(LogMessage log)
@@ -46,21 +59,37 @@ namespace csharpi
             return Task.CompletedTask;
         }
 
-        private Task Ready()
+        private async Task ReadyAsync()
         {
-            Console.WriteLine($"Connected as -> [] :)");
-            return Task.CompletedTask;
+            if(IsDebug())
+            {
+                System.Console.WriteLine("Debug mode enabled.");
+                await _commands.RegisterCommandsToGuildAsync(_testGuilldId);
+            }
+            else{
+                await _commands.RegisterCommandsGloballyAsync(true);
+            }
+
+            Console.WriteLine($"Connected to Discord as {_client.CurrentUser.Username}");
         }
 
-        private async Task MessageReceivedAsync(SocketMessage message)
+        private ServiceProvider ConfigureServices()
         {
-            if (message.Author.Id == _client.CurrentUser.Id)
-                return;
+            return new ServiceCollection()
+                .AddSingleton(_config)
+                .AddSingleton<DiscordSocketClient>()
+                .AddSingleton(x => new InteractionService(x.GetRequiredService<DiscordSocketClient>()))
+                .AddSingleton<CommandHandler>()
+                .BuildServiceProvider();
+        }
 
-            if (message.Content == ".hello")
-            {
-                await message.Channel.SendMessageAsync("world!");
-            }
+        static bool IsDebug ( )
+        {
+            #if DEBUG
+                return true;
+            #else
+                return false;
+            #endif
         }
     }
 }
