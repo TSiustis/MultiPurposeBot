@@ -399,3 +399,7 @@ FodyWeavers.xsd
 
 #config file
 config.json
+#db
+*.db
+*.db-shm
+*.db-wal

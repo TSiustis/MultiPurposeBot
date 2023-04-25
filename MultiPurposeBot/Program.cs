@@ -1,25 +1,36 @@
 ﻿using Discord;
+using Discord.Commands;
 using Discord.Interactions;
 using Discord.WebSocket;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using MultiPurposeBot.Database;
 using MultiPurposeBot.Services;
+using Serilog;
 
 namespace MultiPurposeBot
 {
-    class Program
+    public class Program
     {
         private DiscordSocketClient _client;
         private readonly IConfiguration _config;
-        private InteractionService _commands;
-        private ulong _testGuilldId;
+        private static string _logLevel;
 
-        public static Task Main(string[] args) => new Program().MainAsync();
-
-        public async Task MainAsync(string[] args)
+        static void Main(string[] args = null)
         {
+            if (args.Count() != 0)
+            {
+                _logLevel = args[0];
+            }
+            Serilog.Log.Logger = new LoggerConfiguration()
+                .WriteTo.File("logs/bot.log", rollingInterval: RollingInterval.Day)
+                .WriteTo.Console()
+                .CreateLogger();
 
+            new Program().MainAsync().GetAwaiter().GetResult();
         }
+
 
         public Program()
         {
@@ -28,68 +39,73 @@ namespace MultiPurposeBot
                 .AddJsonFile(path: "config.json");
 
             _config = _builder.Build();
-            _testGuilldId = ulong.Parse(_config["TestGuildId"]);
         }
 
         public async Task MainAsync()
         {
-            using (var services = ConfigureServices())
-            {
-                var client = services.GetRequiredService<DiscordSocketClient>();
-                var commands = services.GetRequiredService<InteractionService>();
-                _client = client;
-                _commands = commands;
+            await using var services = ConfigureServices();
+            var client = services.GetRequiredService<DiscordSocketClient>();
+            _client = client;
 
-                _client.Log += Log;
-                _commands.Log += Log;
-                _client.Ready += ReadyAsync;
+            services.GetRequiredService<LoggingService>();
 
-                await _client.LoginAsync(TokenType.Bot, _config["Token"]);
-                await client.StartAsync();
+            await _client.LoginAsync(TokenType.Bot, _config["Token"]);
+            await client.StartAsync();
 
-                await services.GetRequiredService<CommandHandler>().InitializeAsync();
-                await Task.Delay(Timeout.Infinite);
-            }
-            
+            await services.GetRequiredService<CommandHandler>().InitializeAsync();
+            await Task.Delay(Timeout.Infinite);
         }
 
-        private Task Log(LogMessage log)
+        private static Task Log(LogMessage log)
         {
             Console.WriteLine(log.ToString());
             return Task.CompletedTask;
         }
 
-        private async Task ReadyAsync()
-        {
-            if(IsDebug())
-            {
-                System.Console.WriteLine("Debug mode enabled.");
-                await _commands.RegisterCommandsToGuildAsync(_testGuilldId);
-            }
-            else{
-                await _commands.RegisterCommandsGloballyAsync(true);
-            }
-
-            Console.WriteLine($"Connected to Discord as {_client.CurrentUser.Username}");
-        }
-
         private ServiceProvider ConfigureServices()
         {
-            return new ServiceCollection()
+            var services = new ServiceCollection()
                 .AddSingleton(_config)
                 .AddSingleton<DiscordSocketClient>()
-                .AddSingleton(x => new InteractionService(x.GetRequiredService<DiscordSocketClient>()))
                 .AddSingleton<CommandHandler>()
-                .BuildServiceProvider();
-        }
+                .AddSingleton<CommandService>()
+                .AddSingleton<LoggingService>()
+                .AddDbContext<MultiPurposeDbContext>()
+                .AddLogging(configure => configure.AddSerilog());
 
-        static bool IsDebug ( )
-        {
-            #if DEBUG
-                return true;
-            #else
-                return false;
-            #endif
+            if (!string.IsNullOrEmpty(_logLevel))
+            {
+                switch (_logLevel.ToLower())
+                {
+                    case "info":
+                    {
+                        services.Configure<LoggerFilterOptions>(options => options.MinLevel = LogLevel.Information);
+                        break;
+                    }
+                    case "error":
+                    {
+                        services.Configure<LoggerFilterOptions>(options => options.MinLevel = LogLevel.Error);
+                        break;
+                    }
+                    case "debug":
+                    {
+                        services.Configure<LoggerFilterOptions>(options => options.MinLevel = LogLevel.Debug);
+                        break;
+                    }
+                    default:
+                    {
+                        services.Configure<LoggerFilterOptions>(options => options.MinLevel = LogLevel.Error);
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                services.Configure<LoggerFilterOptions>(options => options.MinLevel = LogLevel.Information);
+            }
+
+            var serviceProvider = services.BuildServiceProvider();
+            return serviceProvider;
         }
     }
 }

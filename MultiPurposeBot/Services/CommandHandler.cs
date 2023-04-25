@@ -1,128 +1,84 @@
 ﻿using System.Reflection;
 using Discord;
+using Discord.Commands;
 using Discord.Interactions;
 using Discord.WebSocket;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Exception = System.Exception;
 
 namespace MultiPurposeBot.Services
 {
     public class CommandHandler
     {
+        private readonly IConfiguration _config;
+        private readonly CommandService _commands;
         private readonly DiscordSocketClient _client;
-        private readonly InteractionService _commands;
         private readonly IServiceProvider _services;
+        private readonly ILogger _logger;
 
-        public CommandHandler(DiscordSocketClient client, InteractionService commands, IServiceProvider services)
+        public CommandHandler(IServiceProvider services)
         {
-            _client = client;
-            _commands = commands;
+            
+            _config = services.GetRequiredService<IConfiguration>();
+            _commands = services.GetRequiredService<CommandService>();
+            _client = services.GetRequiredService<DiscordSocketClient>();
+            _logger = services.GetRequiredService<ILogger<CommandHandler>>();
             _services = services;
+            
+            _commands.CommandExecuted += CommandExecutedAsync;
+
+            _client.MessageReceived += MessageReceivedAsync;
         }
 
         public async Task InitializeAsync()
         {
-           
             await _commands.AddModulesAsync(Assembly.GetEntryAssembly(), _services);
+        }
+        
+        public async Task MessageReceivedAsync(SocketMessage rawMessage)
+        {
+            if (rawMessage is not SocketUserMessage message)
+            {
+                return;
+            }
+
+            if (message.Source != MessageSource.User)
+            {
+                return;
+            }
             
-            _client.InteractionCreated += HandleInteraction;
+            var argPos = 0;
             
-            _commands.SlashCommandExecuted += SlashCommandExecuted;
-            _commands.ContextCommandExecuted += ContextCommandExecuted;
-            _commands.ComponentCommandExecuted += ComponentCommandExecuted;
+            var prefix = char.Parse(_config["Prefix"]);
+            
+            if (!(message.HasMentionPrefix(_client.CurrentUser, ref argPos) || message.HasCharPrefix(prefix, ref argPos)))
+            {
+                return;
+            }
+
+            var context = new SocketCommandContext(_client, message);
+            
+            await _commands.ExecuteAsync(context, argPos, _services);
         }
 
-        private Task ComponentCommandExecuted(ComponentCommandInfo arg1, Discord.IInteractionContext arg2, IResult arg3)
+        public async Task CommandExecutedAsync(Optional<CommandInfo> command, ICommandContext context, Discord.Commands.IResult result)
         {
-            if (!arg3.IsSuccess)
+            if (!command.IsSpecified)
             {
-                switch (arg3.Error)
-                {
-                    case InteractionCommandError.UnmetPrecondition:
-                        break;
-                    case InteractionCommandError.UnknownCommand:
-                        break;
-                    case InteractionCommandError.BadArgs:
-                        break;
-                    case InteractionCommandError.Exception:
-                        break;
-                    case InteractionCommandError.Unsuccessful:
-                        break;
-                    default:
-                        break;
-                }
+                _logger.LogError($"Command failed to execute for [{context.User.Username}] <-> [{result.ErrorReason}]!");
+                return;
             }
 
-            return Task.CompletedTask;
-        }
-
-        private Task ContextCommandExecuted(ContextCommandInfo arg1, Discord.IInteractionContext arg2, IResult arg3)
-        {
-            if (!arg3.IsSuccess)
+            
+            if (result.IsSuccess)
             {
-                switch (arg3.Error)
-                {
-                    case InteractionCommandError.UnmetPrecondition:
-                        break;
-                    case InteractionCommandError.UnknownCommand:
-                        break;
-                    case InteractionCommandError.BadArgs:
-                        break;
-                    case InteractionCommandError.Exception:
-                        break;
-                    case InteractionCommandError.Unsuccessful:
-                        break;
-                    default:
-                        break;
-                }
+                _logger.LogInformation($"Command [{command.Value.Name}] executed for [{context.User.Username}] on [{context.Guild.Name}]");
+                return;
             }
-
-            return Task.CompletedTask;
-        }
-
-        private Task SlashCommandExecuted(SlashCommandInfo arg1, Discord.IInteractionContext arg2, IResult arg3)
-        {
-            if (!arg3.IsSuccess)
-            {
-                switch (arg3.Error)
-                {
-                    case InteractionCommandError.UnmetPrecondition:
-                        // implement
-                        break;
-                    case InteractionCommandError.UnknownCommand:
-                        // implement
-                        break;
-                    case InteractionCommandError.BadArgs:
-                        // implement
-                        break;
-                    case InteractionCommandError.Exception:
-                        // implement
-                        break;
-                    case InteractionCommandError.Unsuccessful:
-                        // implement
-                        break;
-                    default:
-                        break;
-                }
-            }
-
-            return Task.CompletedTask;
-        }
-
-        private async Task HandleInteraction(SocketInteraction arg)
-        {
-            try
-            {
-               
-                var ctx = new SocketInteractionContext(_client, arg);
-                await _commands.ExecuteCommandAsync(ctx, _services);
-            }
-            catch (Exception ex)
-            {
-                
-                if (arg.Type == InteractionType.ApplicationCommand)
-                {
-                    await arg.GetOriginalResponseAsync().ContinueWith(async (msg) => await msg.Result.DeleteAsync());
-                }
-            }
+            
+            await context.Channel.SendMessageAsync($"Sorry, {context.User.Username}... something went wrong -> [{result}]!");
         }
     }
 }
